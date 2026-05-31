@@ -77,6 +77,7 @@ body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-h
 
 /* INVOICE CARD */
 .inv-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;transition:border-color 0.15s;}
+.inv-card-pending{border-color:#fca5a5;background:#fff8f8;}
 .inv-card:hover{border-color:var(--red);}
 .inv-card-head{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;}
 .inv-num{font-size:14px;font-weight:900;color:var(--red);font-family:monospace;}
@@ -197,6 +198,7 @@ body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--text);min-h
   <button class="main-tab" onclick="switchTab('invoices')">الفواتير</button>
   <button class="main-tab" onclick="switchTab('transfers')">الترحيلات</button>
   <button class="main-tab" onclick="switchTab('commissions')">العمولات</button>
+  <button class="main-tab" id="tab-review-btn" onclick="switchTab('review')">⚠️ مراجعة <span id="review-badge" style="display:none;background:#ef4444;color:white;border-radius:10px;padding:1px 6px;font-size:10px;margin-right:4px;"></span></button>
 </div>
 
 <div id="app-content" style="display:none;"></div>
@@ -228,6 +230,7 @@ let activeTab   = 'overview';
 let allInvoices = [];
 let allTransfers= [];
 let allComm     = [];
+let allReviewInvoices = [];
 
 // ══════════════════════════════════════════
 // API
@@ -291,15 +294,29 @@ async function bootApp() {
     branches = Array.isArray(cols) ? cols : [];
 
     // Load all data
-    await Promise.all([loadInvoices(), loadTransfers(), loadCommissions(), loadTgConfig()]);
+    await Promise.all([loadInvoices(), loadTransfers(), loadCommissions(), loadTgConfig(), loadReviewInvoices()]);
     switchTab('overview');
   } catch(e) { showToast('خطأ: ' + e.message, 'err'); }
   document.getElementById('page-loader').style.display = 'none';
 }
 
 async function loadInvoices() {
-  const rows = await sb('GET', '/rest/v1/invoices?order=created_at.desc&limit=500&select=id,inv_number,branch_key,branch_name,total,items_count,customer_name,customer_phone,created_at');
+  const rows = await sb('GET', '/rest/v1/invoices?order=created_at.desc&limit=500&select=id,inv_number,branch_key,branch_name,total,items_count,customer_name,customer_phone,created_at,review_status,notes');
   allInvoices = Array.isArray(rows) ? rows : [];
+}
+async function loadReviewInvoices() {
+  const rows = await sb('GET', '/rest/v1/invoices?review_status=eq.pending&order=created_at.desc&select=id,inv_number,branch_key,branch_name,total,items_count,customer_name,customer_phone,created_at,review_status,notes');
+  allReviewInvoices = Array.isArray(rows) ? rows : [];
+  // Badge count
+  const badge = document.getElementById('review-badge');
+  if (badge) {
+    if (allReviewInvoices.length > 0) {
+      badge.textContent = allReviewInvoices.length;
+      badge.style.display = 'inline';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
 }
 async function loadTransfers() {
   const rows = await sb('GET', '/rest/v1/branch_transfers?order=created_at.desc&limit=500');
@@ -316,14 +333,15 @@ async function loadCommissions() {
 function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.main-tab').forEach((t,i) => {
-    const tabs = ['overview','invoices','transfers','commissions'];
+    const tabs = ['overview','invoices','transfers','commissions','review'];
     t.classList.toggle('active', tabs[i] === tab);
   });
   const c = document.getElementById('app-content');
-  if (tab === 'overview')     renderOverview();
+  if (tab === 'overview')         renderOverview();
   else if (tab === 'invoices')    renderInvoices();
   else if (tab === 'transfers')   renderTransfers();
   else if (tab === 'commissions') renderCommissions();
+  else if (tab === 'review')      renderReview();
 }
 
 // ══════════════════════════════════════════
@@ -458,15 +476,23 @@ function invoiceCardHtml(inv) {
   const timeStr = d.toLocaleTimeString('ar-SY',{hour:'2-digit',minute:'2-digit'});
   const comm = allComm.find(c => c.invoice_id === inv.id);
   const b = branches.find(x=>x.key_name===inv.branch_key);
+  const isPending  = inv.review_status === 'pending';
+  const isApproved = inv.review_status === 'approved';
+  const isRejected = inv.review_status === 'rejected';
 
-  return `<div class="inv-card" onclick="openInvoiceDetail('${inv.id}')">
+  return `<div class="inv-card${isPending?' inv-card-pending':''}" onclick="openInvoiceDetail('${inv.id}')">
     <div class="inv-card-head">
       <div>
         <div class="inv-num">#${inv.inv_number}</div>
         <div class="inv-meta-row">${dateStr} · ${timeStr}</div>
         ${inv.customer_name ? `<div class="inv-customer">${escH(inv.customer_name)}${inv.customer_phone?` · ${escH(inv.customer_phone)}`:''}` : ''}
       </div>
-      <div class="inv-total">${Number(inv.total).toFixed(2)}$</div>
+      <div style="text-align:left">
+        <div class="inv-total">${Number(inv.total).toFixed(2)}$</div>
+        ${isPending  ? `<div style="font-size:10px;font-weight:800;color:#ef4444;margin-top:4px;">⚠️ قيد المراجعة</div>` : ''}
+        ${isApproved ? `<div style="font-size:10px;font-weight:800;color:#16a34a;margin-top:4px;">✅ تمت الموافقة</div>` : ''}
+        ${isRejected ? `<div style="font-size:10px;font-weight:800;color:#6b7280;margin-top:4px;">❌ مرفوضة</div>` : ''}
+      </div>
     </div>
     <div class="inv-foot">
       <span class="badge badge-branch">${b?.icon||'🏪'} ${escH(inv.branch_name||inv.branch_key)}</span>
@@ -944,6 +970,128 @@ ${note ? `<b>ملاحظة:</b> ${note}` : ''}
     showToast(`تم تسجيل ترحيل ${amount}$ من ${b?.display_name||branchKey}`, 'ok');
     closeModal();
     renderTransfers();
+  } catch(e) { showToast('خطأ: ' + e.message, 'err'); }
+}
+
+// ══════════════════════════════════════════
+// REVIEW TAB
+// ══════════════════════════════════════════
+function renderReview() {
+  const c = document.getElementById('app-content');
+  const list = allReviewInvoices;
+
+  if (!list.length) {
+    c.innerHTML = `
+      <div style="padding:40px 16px;text-align:center;">
+        <div style="font-size:48px;margin-bottom:12px;">✅</div>
+        <div style="font-size:16px;font-weight:800;color:var(--text);">لا توجد فواتير قيد المراجعة</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:6px;">كل الفواتير ضمن النطاق المسموح</div>
+      </div>`;
+    return;
+  }
+
+  c.innerHTML = `
+    <div style="padding:16px;">
+      <div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:14px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;">⚠️</span>
+        <div>
+          <div style="font-size:14px;font-weight:900;color:#b91c1c;">فواتير تحتاج مراجعة (${list.length})</div>
+          <div style="font-size:12px;color:#ef4444;font-weight:600;">هذه الفواتير تضمنت بيعاً بأقل من سعر الجملة</div>
+        </div>
+      </div>
+      <div id="review-list">
+        ${list.map(inv => reviewCardHtml(inv)).join('')}
+      </div>
+    </div>`;
+}
+
+function reviewCardHtml(inv) {
+  const d = new Date(inv.created_at);
+  const dateStr = d.toLocaleDateString('ar-SY',{day:'2-digit',month:'2-digit',year:'numeric'});
+  const timeStr = d.toLocaleTimeString('ar-SY',{hour:'2-digit',minute:'2-digit'});
+  const b = branches.find(x=>x.key_name===inv.branch_key);
+  return `
+    <div class="inv-card inv-card-pending" style="margin-bottom:12px;">
+      <div class="inv-card-head" onclick="openInvoiceDetail('${inv.id}')" style="cursor:pointer;">
+        <div>
+          <div class="inv-num">#${inv.inv_number}</div>
+          <div class="inv-meta-row">${dateStr} · ${timeStr}</div>
+          ${inv.customer_name?`<div class="inv-customer">${escH(inv.customer_name)}${inv.customer_phone?` · ${escH(inv.customer_phone)}`:''}</div>`:''}
+          ${inv.notes?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">📝 ${escH(inv.notes)}</div>`:''}
+        </div>
+        <div style="text-align:left;">
+          <div class="inv-total">${Number(inv.total).toFixed(2)}$</div>
+          <div style="font-size:10px;font-weight:800;color:#ef4444;margin-top:4px;">⚠️ قيد المراجعة</div>
+        </div>
+      </div>
+      <div class="inv-foot">
+        <span class="badge badge-branch">${b?.icon||'🏪'} ${escH(inv.branch_name||inv.branch_key)}</span>
+        <span class="badge" style="background:var(--surface2);color:var(--text2);">${inv.items_count} قطعة</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+        <button class="btn btn-success" style="flex:1;justify-content:center;font-size:13px;"
+          onclick="approveInvoice('${inv.id}','${inv.inv_number}')">
+          ✅ موافقة
+        </button>
+        <button class="btn btn-ghost" style="flex:1;justify-content:center;font-size:13px;color:#ef4444;border-color:#fca5a5;"
+          onclick="rejectInvoice('${inv.id}','${inv.inv_number}')">
+          ❌ رفض
+        </button>
+      </div>
+    </div>`;
+}
+
+async function approveInvoice(invId, invNum) {
+  if (!confirm(`الموافقة على الفاتورة #${invNum}؟`)) return;
+  try {
+    await sb('PATCH', `/rest/v1/invoices?id=eq.${invId}`, { review_status: 'approved' });
+    // Update local arrays
+    allReviewInvoices = allReviewInvoices.filter(i => i.id !== invId);
+    const idx = allInvoices.findIndex(i => i.id === invId);
+    if (idx >= 0) allInvoices[idx].review_status = 'approved';
+    // Update badge
+    const badge = document.getElementById('review-badge');
+    if (badge) {
+      if (allReviewInvoices.length > 0) { badge.textContent = allReviewInvoices.length; }
+      else { badge.style.display = 'none'; }
+    }
+    await sendTelegram(
+`<b>✅ تمت الموافقة على فاتورة — GMT Admin</b>
+━━━━━━━━━━━━━━━
+<b>الفاتورة:</b> #${invNum}
+<b>الحالة:</b> تمت الموافقة
+<b>التوقيت:</b> ${new Date().toLocaleString('ar-SY')}
+━━━━━━━━━━━━━━━`
+    );
+    showToast(`تمت الموافقة على #${invNum}`, 'ok');
+    renderReview();
+  } catch(e) { showToast('خطأ: ' + e.message, 'err'); }
+}
+
+async function rejectInvoice(invId, invNum) {
+  const reason = prompt(`سبب الرفض للفاتورة #${invNum} (اختياري):`);
+  if (reason === null) return; // cancelled
+  try {
+    await sb('PATCH', `/rest/v1/invoices?id=eq.${invId}`, { review_status: 'rejected' });
+    allReviewInvoices = allReviewInvoices.filter(i => i.id !== invId);
+    const idx = allInvoices.findIndex(i => i.id === invId);
+    if (idx >= 0) allInvoices[idx].review_status = 'rejected';
+    const badge = document.getElementById('review-badge');
+    if (badge) {
+      if (allReviewInvoices.length > 0) { badge.textContent = allReviewInvoices.length; }
+      else { badge.style.display = 'none'; }
+    }
+    await sendTelegram(
+`<b>❌ تم رفض فاتورة — GMT Admin</b>
+━━━━━━━━━━━━━━━
+<b>الفاتورة:</b> #${invNum}
+<b>الحالة:</b> مرفوضة
+${reason ? `<b>السبب:</b> ${reason}` : ''}
+<b>التوقيت:</b> ${new Date().toLocaleString('ar-SY')}
+━━━━━━━━━━━━━━━`
+    );
+    showToast(`تم رفض #${invNum}`, 'ok');
+    renderReview();
   } catch(e) { showToast('خطأ: ' + e.message, 'err'); }
 }
 
